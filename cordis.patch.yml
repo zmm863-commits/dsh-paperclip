@@ -1,0 +1,4 @@
+# dsh-paperclip bundle patch: registers the paperclip button plugin
+- insert:
+    - id: paperclip
+      name: 'dsh-paperclip'
