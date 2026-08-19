@@ -162,18 +162,34 @@ async function pickAndReadFiles(
   return results
 }
 
-// ─── Insert into textarea ───────────────────────────────────────────────────
+// ─── Insert into draft ─────────────────────────────────────────────────────
+// The composer textarea is a React-controlled input: writing to .value
+// directly is overwritten on the next render. Preferred write path is the
+// session-standard `inputActions.setDraft(text)` (every session-scope slot
+// component receives it once an input machine is live). Fallback: poke the
+// textarea through the native value setter and dispatch an input event, so
+// React's onChange observes the change even when the machine is not ready.
 function insertIntoTextarea(text: string) {
-  const textarea = findTextarea()
+  const textarea = document.querySelector<HTMLTextAreaElement>('[data-composer-seat] textarea')
   if (!textarea) return
-  const current = textarea.value
-  textarea.value = current ? current.trimEnd() + '\n' + text.trimStart() : text
+  const proto = Object.getPrototypeOf(textarea)
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value')
+  if (descriptor?.set) {
+    descriptor.set.call(textarea, textarea.value ? textarea.value.trimEnd() + '\n' + text.trimStart() : text)
+  } else {
+    textarea.value = textarea.value ? textarea.value.trimEnd() + '\n' + text.trimStart() : text
+  }
   textarea.dispatchEvent(new Event('input', { bubbles: true }))
+  textarea.dispatchEvent(new Event('change', { bubbles: true }))
   textarea.scrollTop = textarea.scrollHeight
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
-function PaperclipButton({ t }: { t: (k: string) => string }) {
+interface PaperclipProps {
+  t: (k: string) => string
+  inputActions?: { setDraft(text: string): void }
+}
+function PaperclipButton({ t, inputActions }: PaperclipProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -200,8 +216,15 @@ function PaperclipButton({ t }: { t: (k: string) => string }) {
         showError(t('error.read') + ': ' + file.name)
       }
     }
-    if (text) insertIntoTextarea(text)
-  }, [showError, t])
+    if (text) {
+      if (inputActions?.setDraft) {
+        const current = document.querySelector<HTMLTextAreaElement>('[data-composer-seat] textarea')?.value ?? ''
+        inputActions.setDraft(current ? current.trimEnd() + '\n' + text.trimStart() : text)
+      } else {
+        insertIntoTextarea(text)
+      }
+    }
+  }, [showError, t, inputActions])
 
   const handleClick = useCallback(() => {
     inputRef.current?.click()

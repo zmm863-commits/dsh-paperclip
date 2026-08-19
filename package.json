@@ -1,6 +1,6 @@
 {
   "name": "dsh-paperclip",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "DSH Web GUI paperclip button: a single 📎 button in the composer that opens a file picker and drops file content into the textarea.",
   "type": "module",
   "license": "MIT",
