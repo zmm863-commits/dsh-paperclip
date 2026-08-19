@@ -19,7 +19,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          # npm >= 11.5.1 is required for OIDC trusted publishing, which
+          # ships with Node >= 22.14.0.
+          node-version: '22.14.0'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
@@ -29,4 +31,9 @@ jobs:
         run: npm run build
 
       - name: Publish to npm (OIDC trusted publishing)
-        run: npm publish --access public
+        run: |
+          # setup-node writes a placeholder NODE_AUTH_TOKEN into the
+          # environment; unset it so npm uses trusted publishing (OIDC)
+          # instead of falling back to a nonexistent token.
+          unset NODE_AUTH_TOKEN
+          npm publish --access public
