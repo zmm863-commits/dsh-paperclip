@@ -19,10 +19,14 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          # npm >= 11.5.1 is required for OIDC trusted publishing, which
-          # ships with Node >= 22.14.0.
-          node-version: '22.14.0'
+          # Node 22.x satisfies tsdown's engines (^22.18.0).
+          node-version: '22.23.2'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
+        # Node 22.x ships npm 10.x, which does not support trusted
+        # publishing; npm 11.x is required.
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: npm ci
