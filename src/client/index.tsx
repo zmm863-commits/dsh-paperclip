@@ -84,7 +84,9 @@ function injectStyle() {
   }
 }
 
-// ─── Recursively read dropped directories ───────────────────────────────────
+// ─── Read dropped entries ─────────────────────────────────────────────────
+// Files: return as-is. Directories: return only the folder itself, do NOT
+// recurse into its contents — the UI just needs to show "📄 folder-name".
 function readEntry(entry: any, prefix = ''): Promise<File[]> {
   return new Promise((resolve) => {
     const path = prefix ? prefix + '/' + entry.name : entry.name
@@ -94,12 +96,9 @@ function readEntry(entry: any, prefix = ''): Promise<File[]> {
         resolve([f])
       }, () => resolve([]))
     } else if (entry.isDirectory) {
-      const reader = entry.createReader()
-      reader.readEntries(async (entries: any[]) => {
-        const out: File[] = []
-        for (const e of entries) out.push(...await readEntry(e, path))
-        resolve(out)
-      }, () => resolve([]))
+      const f = new File([], entry.name, { type: 'httpd/unix-directory' } as any)
+      try { (f as any).webkitRelativePath = path } catch {}
+      resolve([f])
     } else {
       resolve([])
     }
