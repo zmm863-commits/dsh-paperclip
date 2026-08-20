@@ -1,8 +1,8 @@
 /**
  * dsh-paperclip client half: a single paperclip button in the composer's
  * input row. Click to pick files, drag-and-drop to attach (including whole
- * directories). Files are uploaded to the server and their names are listed
- * in the composer textarea — the agent can then read them from disk.
+ * directories). Files are uploaded to the server with a progress bar, and
+ * their names are listed in the composer textarea.
  */
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -16,13 +16,13 @@ const ID = 'dsh-paperclip'
 const ZH = {
   'btn.title': '上传文件（支持拖拽目录）',
   'hint.drop': '松开以上传文件 / 目录',
-  'uploading': '上传中…',
+  'uploading': '上传中 {current}/{total}',
 }
 
 const EN = {
   'btn.title': 'Upload file (drag dir ok)',
   'hint.drop': 'Release to upload',
-  'uploading': 'Uploading…',
+  'uploading': 'Uploading {current}/{total}',
 }
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
@@ -33,10 +33,16 @@ const CSS = `
   background: transparent; color: inherit; border-radius: 999px;
   font-size: 14px; line-height: 1; cursor: pointer; opacity: .7;
   transition: opacity .12s ease, background-color .12s ease; flex-shrink: 0;
+  position: relative;
 }
 .dsh-pc-btn:hover { opacity: 1; background: rgba(127,127,137,.12); }
 .dsh-pc-btn[data-active="true"] { opacity: 1; background: rgba(77,107,254,.15); border-color: rgba(77,107,254,.5); }
 .dsh-pc-btn:disabled { opacity: .4; cursor: default; }
+.dsh-pc-progress {
+  position: absolute; bottom: -2px; left: 0; height: 2px;
+  background: rgba(77,107,254,.6); border-radius: 1px;
+  transition: width .15s ease;
+}
 .dsh-pc-dropzone {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   background: rgba(77,107,254,.08); border: 2px dashed rgba(77,107,254,.4);
@@ -132,24 +138,25 @@ interface PaperclipProps {
 function PaperclipButton({ t, inputActions }: PaperclipProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null)
   const handleFilesRef = useRef<(files: File[] | FileList) => Promise<void>>(() => Promise.resolve())
 
   const handleFiles = useCallback(async (fileList: File[] | FileList) => {
     const files = Array.from(fileList).filter(f => f.size > 0 || f.name)
     if (files.length === 0) return
-    setBusy(true)
+    setProgress({ current: 0, total: files.length })
     try {
-      const names: string[] = []
-      for (const file of files) {
-        const name = await uploadFile(file)
+      const names: string = []
+      for (let i = 0; i < files.length; i++) {
+        const name = await uploadFile(files[i])
         names.push('📄 ' + name)
+        setProgress({ current: i + 1, total: files.length })
       }
       insertText(names.join('\n'), inputActions)
     } catch (err) {
       console.error('[dsh-paperclip] upload error:', err)
     } finally {
-      setBusy(false)
+      setTimeout(() => setProgress(null), 800)
     }
   }, [inputActions])
 
@@ -194,6 +201,8 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
     }
   }, [])
 
+  const pct = progress ? Math.round((progress.current / progress.total) * 100) : 0
+
   return createElement('span', { style: { position: 'relative', display: 'inline-flex' } },
     createElement('input', {
       ref: inputRef,
@@ -205,11 +214,12 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
     createElement('button', {
       type: 'button',
       className: 'dsh-pc-btn',
-      title: t('btn.title'),
+      title: progress ? t('uploading').replace('{current}', String(progress.current)).replace('{total}', String(progress.total)) : t('btn.title'),
       'data-active': dragging ? 'true' : 'false',
-      disabled: busy,
+      disabled: !!progress,
       onClick: () => inputRef.current?.click(),
-    }, busy ? '⏳' : '📎'),
+    }, progress ? `${pct}%` : '📎',
+    progress && createElement('div', { className: 'dsh-pc-progress', style: { width: pct + '%' } })),
     dragging && createElement('div', { className: 'dsh-pc-dropzone' }, t('hint.drop')),
   )
 }
