@@ -1,19 +1,18 @@
 /**
  * dsh-paperclip client half: a single paperclip button in the composer's
- * input row. Click to pick files, drag-and-drop to attach. Selected files are
- * read as text and inserted into the composer textarea with a formatted header.
+ * input row. Click to pick files, drag-and-drop to attach (including whole
+ * directories). Text files are read and inserted into the composer textarea
+ * with a formatted header; binary files (zip, images, …) show metadata only.
  */
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 
-// ─── Injection ──────────────────────────────────────────────────────────────
 export const inject = ['slots', 'locale']
 
-// ─── Constants ──────────────────────────────────────────────────────────────
 const ID = 'dsh-paperclip'
-const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5 MB
-const MAX_FILES = 10
+const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5 MB per file
+const MAX_FILES = 50                   // allow more when a folder is dropped
 
 const ACCEPT = [
   '.html', '.htm', '.js', '.ts', '.jsx', '.tsx',
@@ -25,30 +24,34 @@ const ACCEPT = [
   '.sql', '.log', '.env', '.ini', '.cfg', '.conf',
   '.csv', '.tsv', '.svg',
   '.vue', '.svelte', '.astro',
-  '.toml', '.lock',
+  '.toml', '.lock', '.zip',
 ].join(',')
 
-// ─── i18n ───────────────────────────────────────────────────────────────────
+// ─── i18n ──────────────────────────────────────────────────────────────────
 const ZH = {
-  'btn.title': '上传文件（支持拖拽）',
+  'btn.title': '上传文件（支持拖拽目录）',
+  'btn.folder': '选择目录',
   'error.size': '文件超过 5MB 限制',
   'error.read': '读取文件失败',
-  'error.many': '最多同时上传 10 个文件',
-  'hint.drop': '松开以上传文件',
+  'error.many': '最多同时上传 50 个文件',
+  'hint.drop': '松开以上传文件 / 目录',
+  'meta.binary': '二进制内容已省略',
 }
 
 const EN = {
-  'btn.title': 'Upload file (drag & drop ok)',
+  'btn.title': 'Upload file (drag dir ok)',
+  'btn.folder': 'Select folder',
   'error.size': 'File exceeds 5MB limit',
   'error.read': 'Failed to read file',
-  'error.many': 'Maximum 10 files at once',
+  'error.many': 'Maximum 50 files at once',
   'hint.drop': 'Release to upload',
+  'meta.binary': 'binary content omitted',
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
@@ -58,8 +61,63 @@ function formatContent(name: string, size: number, content: string): string {
   return `\n📄 ${name} (${formatSize(size)})\n\`\`\`${fence}\n${content}\n\`\`\`\n`
 }
 
-function findTextarea(): HTMLTextAreaElement | null {
-  return document.querySelector('[data-composer-seat] textarea')
+const BINARY_EXTS = new Set(['.zip', '.gz', '.bz2', '.xz', '.7z', '.rar', '.tar', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.bmp', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.exe', '.dll', '.so', '.dylib', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.mp3', '.mp4', '.avi', '.mov', '.webm', '.wav', '.flac'])
+
+function isBinaryByName(name: string): boolean {
+  const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
+  return BINARY_EXTS.has(ext)
+}
+
+function isBinary(file: File): Promise<boolean> {
+  if (isBinaryByName(file.name)) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    const blob = file.slice(0, 512)
+    const reader = new FileReader()
+    reader.onload = () => {
+      const bytes = new Uint8Array(reader.result as ArrayBuffer)
+      for (let i = 0; i < bytes.length; i++) {
+        if (bytes[i] === 0) { resolve(true); return }
+      }
+      resolve(false)
+    }
+    reader.onerror = () => resolve(false)
+    reader.readAsArrayBuffer(blob)
+  })
+}
+
+function readFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error)
+    reader.readAsText(file)
+  })
+}
+
+/**
+ * Recursively read a FileSystemEntry (file or directory) into a flat File[]
+ * so drag-and-drop of whole folders just works.
+ */
+function readEntry(entry: any, prefix = ''): Promise<File[]> {
+  return new Promise((resolve) => {
+    const path = prefix ? prefix + '/' + entry.name : entry.name
+    if (entry.isFile) {
+      entry.file((f: File) => {
+        // attach the directory path so the UI can show it
+        try { (f as any).webkitRelativePath = path } catch {}
+        resolve([f])
+      }, () => resolve([]))
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader()
+      reader.readEntries(async (entries: any[]) => {
+        const out: File[] = []
+        for (const e of entries) out.push(...await readEntry(e, path))
+        resolve(out)
+      }, () => resolve([]))
+    } else {
+      resolve([])
+    }
+  })
 }
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
@@ -136,52 +194,25 @@ function injectStyle() {
   }
 }
 
-// ─── File reading ───────────────────────────────────────────────────────────
-function readFile(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => reject(reader.error)
-    reader.readAsText(file)
-  })
-}
-
-async function pickAndReadFiles(
-  input: HTMLInputElement,
-): Promise<Array<{ name: string; size: number; content: string }>> {
-  const files = Array.from(input.files || []).slice(0, MAX_FILES)
-  const results: Array<{ name: string; size: number; content: string }> = []
-  for (const file of files) {
-    if (file.size > MAX_FILE_SIZE) continue
-    try {
-      const content = await readFile(file)
-      results.push({ name: file.name, size: file.size, content })
-    } catch { /* skip */ }
-  }
-  input.value = ''
-  return results
-}
-
 // ─── Insert into draft ─────────────────────────────────────────────────────
-// The composer textarea is a React-controlled input: writing to .value
-// directly is overwritten on the next render. Preferred write path is the
-// session-standard `inputActions.setDraft(text)` (every session-scope slot
-// component receives it once an input machine is live). Fallback: poke the
-// textarea through the native value setter and dispatch an input event, so
-// React's onChange observes the change even when the machine is not ready.
-function insertIntoTextarea(text: string) {
+// React-controlled textarea: writing .value directly is overwritten on the
+// next render. Prefer the official inputActions.setDraft(); fall back to the
+// native value setter + input/change events.
+function insertText(text: string, inputActions?: { setDraft(text: string): void }) {
   const textarea = document.querySelector<HTMLTextAreaElement>('[data-composer-seat] textarea')
-  if (!textarea) return
-  const proto = Object.getPrototypeOf(textarea)
-  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value')
-  if (descriptor?.set) {
-    descriptor.set.call(textarea, textarea.value ? textarea.value.trimEnd() + '\n' + text.trimStart() : text)
-  } else {
-    textarea.value = textarea.value ? textarea.value.trimEnd() + '\n' + text.trimStart() : text
+  if (inputActions?.setDraft) {
+    const current = textarea?.value ?? ''
+    inputActions.setDraft(current ? current.trimEnd() + '\n' + text.trimStart() : text)
+  } else if (textarea) {
+    const proto = Object.getPrototypeOf(textarea)
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value')
+    const value = textarea.value ? textarea.value.trimEnd() + '\n' + text.trimStart() : text
+    if (descriptor?.set) descriptor.set.call(textarea, value)
+    else textarea.value = value
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    textarea.dispatchEvent(new Event('change', { bubbles: true }))
+    textarea.scrollTop = textarea.scrollHeight
   }
-  textarea.dispatchEvent(new Event('input', { bubbles: true }))
-  textarea.dispatchEvent(new Event('change', { bubbles: true }))
-  textarea.scrollTop = textarea.scrollHeight
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -189,17 +220,21 @@ interface PaperclipProps {
   t: (k: string) => string
   inputActions?: { setDraft(text: string): void }
 }
+
 function PaperclipButton({ t, inputActions }: PaperclipProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const dirInputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
+  // keep the latest handler in a ref so the effect never needs to re-bind
+  const handleFilesRef = useRef<(files: File[] | FileList) => Promise<void>>(() => Promise.resolve())
 
   const showError = useCallback((msg: string) => {
     setError(msg)
     setTimeout(() => setError(null), 3000)
   }, [])
 
-  const handleFiles = useCallback(async (fileList: FileList | File[]) => {
+  const handleFiles = useCallback(async (fileList: File[] | FileList) => {
     const files = Array.from(fileList).slice(0, MAX_FILES)
     if (files.length === 0) return
 
@@ -210,36 +245,43 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
         continue
       }
       try {
-        const content = await readFile(file)
-        text += formatContent(file.name, file.size, content)
+        // webkitRelativePath carries the directory structure when a folder
+        // is selected / dropped; fall back to the bare name for flat files.
+        const displayName = (file as any).webkitRelativePath || file.name
+        if (await isBinary(file)) {
+          text += `\n📄 ${displayName} (${formatSize(file.size)}) — ${t('meta.binary')}\n`
+        } else {
+          const content = await readFile(file)
+          text += formatContent(displayName, file.size, content)
+        }
       } catch {
         showError(t('error.read') + ': ' + file.name)
       }
     }
-    if (text) {
-      if (inputActions?.setDraft) {
-        const current = document.querySelector<HTMLTextAreaElement>('[data-composer-seat] textarea')?.value ?? ''
-        inputActions.setDraft(current ? current.trimEnd() + '\n' + text.trimStart() : text)
-      } else {
-        insertIntoTextarea(text)
-      }
-    }
+    if (text) insertText(text, inputActions)
   }, [showError, t, inputActions])
+
+  // always point the ref at the latest closure
+  handleFilesRef.current = handleFiles
 
   const handleClick = useCallback(() => {
     inputRef.current?.click()
   }, [])
 
-  const handleInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      await handleFiles(e.target.files)
-    }
+  const handleDirClick = useCallback(() => {
+    dirInputRef.current?.click()
+  }, [])
+
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) handleFiles(e.target.files)
   }, [handleFiles])
 
-  // Drag & drop on composer
+  // Drag & drop on the whole conversation scroll area (bigger drop zone).
+  // webkitGetAsEntry() lets us recurse into dropped directories.
   useEffect(() => {
-    const composer = document.querySelector('[data-composer-seat]')
-    if (!composer) return
+    const zone = document.querySelector<HTMLElement>('[data-conversation-scroll]')
+      || document.querySelector<HTMLElement>('[data-composer-seat]')
+    if (!zone) return
 
     let depth = 0
 
@@ -258,22 +300,35 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
       e.preventDefault()
       depth = 0
       setDragging(false)
-      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-        await handleFiles(e.dataTransfer.files)
+
+      const items = e.dataTransfer?.items
+      if (!items || items.length === 0) return
+
+      const files: File[] = []
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry?.()
+        if (entry) {
+          files.push(...await readEntry(entry))
+        } else if (items[i].kind === 'file') {
+          const f = items[i].getAsFile()
+          if (f) files.push(f)
+        }
       }
+
+      if (files.length > 0) handleFilesRef.current(files)
     }
 
-    composer.addEventListener('dragenter', onDragEnter)
-    composer.addEventListener('dragover', onDragOver)
-    composer.addEventListener('dragleave', onDragLeave)
-    composer.addEventListener('drop', onDrop)
+    zone.addEventListener('dragenter', onDragEnter)
+    zone.addEventListener('dragover', onDragOver)
+    zone.addEventListener('dragleave', onDragLeave)
+    zone.addEventListener('drop', onDrop)
     return () => {
-      composer.removeEventListener('dragenter', onDragEnter)
-      composer.removeEventListener('dragover', onDragOver)
-      composer.removeEventListener('dragleave', onDragLeave)
-      composer.removeEventListener('drop', onDrop)
+      zone.removeEventListener('dragenter', onDragEnter)
+      zone.removeEventListener('dragover', onDragOver)
+      zone.removeEventListener('dragleave', onDragLeave)
+      zone.removeEventListener('drop', onDrop)
     }
-  }, [handleFiles])
+  }, [])
 
   return createElement('span', { style: { position: 'relative', display: 'inline-flex' } },
     createElement('input', {
@@ -281,6 +336,13 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
       type: 'file',
       multiple: true,
       accept: ACCEPT,
+      style: { display: 'none' },
+      onChange: handleInputChange,
+    }),
+    createElement('input', {
+      ref: dirInputRef,
+      type: 'file',
+      webkitdirectory: '',
       style: { display: 'none' },
       onChange: handleInputChange,
     }),
