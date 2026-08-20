@@ -1,8 +1,8 @@
 /**
  * dsh-paperclip client half: a single paperclip button in the composer's
  * input row. Click to pick files, drag-and-drop to attach (including whole
- * directories). Inserted into the composer textarea is a plain list of the
- * uploaded file paths — no size cap, no content preview.
+ * directories). Files are uploaded to the server and their names are listed
+ * in the composer textarea — the agent can then read them from disk.
  */
 import { createElement, useCallback, useEffect, useRef, useState } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -16,56 +16,32 @@ const ID = 'dsh-paperclip'
 const ZH = {
   'btn.title': '上传文件（支持拖拽目录）',
   'hint.drop': '松开以上传文件 / 目录',
+  'uploading': '上传中…',
 }
 
 const EN = {
   'btn.title': 'Upload file (drag dir ok)',
   'hint.drop': 'Release to upload',
+  'uploading': 'Uploading…',
 }
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
 const CSS = `
 .dsh-pc-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid rgba(127,127,137,.35);
-  background: transparent;
-  color: inherit;
-  border-radius: 999px;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: .7;
-  transition: opacity .12s ease, background-color .12s ease;
-  flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: 1px solid rgba(127,127,137,.35);
+  background: transparent; color: inherit; border-radius: 999px;
+  font-size: 14px; line-height: 1; cursor: pointer; opacity: .7;
+  transition: opacity .12s ease, background-color .12s ease; flex-shrink: 0;
 }
-.dsh-pc-btn:hover {
-  opacity: 1;
-  background: rgba(127,127,137,.12);
-}
-.dsh-pc-btn[data-active="true"] {
-  opacity: 1;
-  background: rgba(77,107,254,.15);
-  border-color: rgba(77,107,254,.5);
-}
+.dsh-pc-btn:hover { opacity: 1; background: rgba(127,127,137,.12); }
+.dsh-pc-btn[data-active="true"] { opacity: 1; background: rgba(77,107,254,.15); border-color: rgba(77,107,254,.5); }
+.dsh-pc-btn:disabled { opacity: .4; cursor: default; }
 .dsh-pc-dropzone {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(77,107,254,.08);
-  border: 2px dashed rgba(77,107,254,.4);
-  border-radius: 12px;
-  color: rgba(77,107,254,.8);
-  font-size: 14px;
-  font-weight: 500;
-  pointer-events: none;
-  z-index: 10;
-  animation: dsh-pc-fadein .15s ease;
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(77,107,254,.08); border: 2px dashed rgba(77,107,254,.4);
+  border-radius: 12px; color: rgba(77,107,254,.8); font-size: 14px; font-weight: 500;
+  pointer-events: none; z-index: 10; animation: dsh-pc-fadein .15s ease;
 }
 @keyframes dsh-pc-fadein {
   from { opacity: 0; transform: translateX(-50%) translateY(10px); }
@@ -84,25 +60,31 @@ function injectStyle() {
   }
 }
 
-// ─── Read dropped entries ─────────────────────────────────────────────────
-// Files: return as-is. Directories: return only the folder itself, do NOT
-// recurse into its contents — the UI just needs to show "📄 folder-name".
-function readEntry(entry: any, prefix = ''): Promise<File[]> {
-  return new Promise((resolve) => {
-    const path = prefix ? prefix + '/' + entry.name : entry.name
-    if (entry.isFile) {
-      entry.file((f: File) => {
-        try { (f as any).webkitRelativePath = path } catch {}
-        resolve([f])
-      }, () => resolve([]))
-    } else if (entry.isDirectory) {
-      const f = new File([], entry.name, { type: 'httpd/unix-directory' } as any)
-      try { (f as any).webkitRelativePath = path } catch {}
-      resolve([f])
-    } else {
-      resolve([])
+// ─── Upload helper ─────────────────────────────────────────────────────────
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      const comma = result.indexOf(',')
+      resolve(comma >= 0 ? result.slice(comma + 1) : result)
     }
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
   })
+}
+
+async function uploadFile(file: File): Promise<string> {
+  const contentBase64 = await fileToBase64(file)
+  const filename = (file as any).webkitRelativePath || file.name
+  const resp = await fetch('/api/paperclip/upload', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ filename, contentBase64 }),
+  })
+  if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+  const data = await resp.json()
+  return data.name || filename
 }
 
 // ─── Insert into draft ─────────────────────────────────────────────────────
@@ -122,6 +104,25 @@ function insertText(text: string, inputActions?: { setDraft(text: string): void 
   }
 }
 
+// ─── Read dropped entries ─────────────────────────────────────────────────
+function readEntry(entry: any, prefix = ''): Promise<File[]> {
+  return new Promise((resolve) => {
+    const path = prefix ? prefix + '/' + entry.name : entry.name
+    if (entry.isFile) {
+      entry.file((f: File) => {
+        try { (f as any).webkitRelativePath = path } catch {}
+        resolve([f])
+      }, () => resolve([]))
+    } else if (entry.isDirectory) {
+      const f = new File([], entry.name, { type: 'httpd/unix-directory' } as any)
+      try { (f as any).webkitRelativePath = path } catch {}
+      resolve([f])
+    } else {
+      resolve([])
+    }
+  })
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 interface PaperclipProps {
   t: (k: string) => string
@@ -131,17 +132,25 @@ interface PaperclipProps {
 function PaperclipButton({ t, inputActions }: PaperclipProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
+  const [busy, setBusy] = useState(false)
   const handleFilesRef = useRef<(files: File[] | FileList) => Promise<void>>(() => Promise.resolve())
 
-  // Build a path list only — no size limits, no content reading.
   const handleFiles = useCallback(async (fileList: File[] | FileList) => {
-    const files = Array.from(fileList)
+    const files = Array.from(fileList).filter(f => f.size > 0 || f.name)
     if (files.length === 0) return
-    const lines = files.map(f => {
-      const path = (f as any).webkitRelativePath || f.name
-      return '📄 ' + path
-    })
-    insertText(lines.join('\n'), inputActions)
+    setBusy(true)
+    try {
+      const names: string[] = []
+      for (const file of files) {
+        const name = await uploadFile(file)
+        names.push('📄 ' + name)
+      }
+      insertText(names.join('\n'), inputActions)
+    } catch (err) {
+      console.error('[dsh-paperclip] upload error:', err)
+    } finally {
+      setBusy(false)
+    }
   }, [inputActions])
 
   handleFilesRef.current = handleFiles
@@ -150,52 +159,26 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
     if (e.target.files && e.target.files.length > 0) handleFiles(e.target.files)
   }, [handleFiles])
 
-  // Drag & drop on the whole conversation scroll area.
-  // stopPropagation() prevents DSH's own attachment handler from firing
-  // its "images only" warning at the same time.
   useEffect(() => {
     const zone = document.querySelector<HTMLElement>('[data-conversation-scroll]')
       || document.querySelector<HTMLElement>('[data-composer-seat]')
     if (!zone) return
 
     let depth = 0
-
-    const onDragEnter = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      depth++
-      if (depth === 1) setDragging(true)
-    }
-    const onDragOver = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-    }
-    const onDragLeave = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      depth--
-      if (depth <= 0) { depth = 0; setDragging(false) }
-    }
+    const onDragEnter = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); depth++; if (depth === 1) setDragging(true) }
+    const onDragOver = (e: DragEvent) => { e.preventDefault(); e.stopPropagation() }
+    const onDragLeave = (e: DragEvent) => { e.preventDefault(); e.stopPropagation(); depth--; if (depth <= 0) { depth = 0; setDragging(false) } }
     const onDrop = async (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      depth = 0
-      setDragging(false)
-
+      e.preventDefault(); e.stopPropagation()
+      depth = 0; setDragging(false)
       const items = e.dataTransfer?.items
       if (!items || items.length === 0) return
-
       const files: File[] = []
       for (let i = 0; i < items.length; i++) {
         const entry = items[i].webkitGetAsEntry?.()
-        if (entry) {
-          files.push(...await readEntry(entry))
-        } else if (items[i].kind === 'file') {
-          const f = items[i].getAsFile()
-          if (f) files.push(f)
-        }
+        if (entry) files.push(...await readEntry(entry))
+        else if (items[i].kind === 'file') { const f = items[i].getAsFile(); if (f) files.push(f) }
       }
-
       if (files.length > 0) handleFilesRef.current(files)
     }
 
@@ -224,8 +207,9 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
       className: 'dsh-pc-btn',
       title: t('btn.title'),
       'data-active': dragging ? 'true' : 'false',
+      disabled: busy,
       onClick: () => inputRef.current?.click(),
-    }, '📎'),
+    }, busy ? '⏳' : '📎'),
     dragging && createElement('div', { className: 'dsh-pc-dropzone' }, t('hint.drop')),
   )
 }
@@ -233,7 +217,6 @@ function PaperclipButton({ t, inputActions }: PaperclipProps) {
 // ─── Plugin entry ───────────────────────────────────────────────────────────
 export function apply(ctx: ClientContext): void {
   injectStyle()
-
   let t = function (key: string) { return key }
   try {
     ctx.locale.register(ID, 'zh', ZH)
@@ -242,7 +225,6 @@ export function apply(ctx: ClientContext): void {
   } catch (error) {
     console.error(ID + ': locale registration failed: ' + String(error))
   }
-
   ctx.slots.inject('conversation.input.right', function () {
     return ctx.slots.register(
       { name: 'conversation.input.right', id: 'paperclip', order: 70, label: 'Paperclip' },
