@@ -49,6 +49,18 @@ npm run build    # 构建 lib/（tsdown）
 npm run watch    # 监听模式
 ```
 
+## 反馈 / Feedback
+
+有问题、建议或想新增文件格式？欢迎提 issue：
+
+- 🐛 **Bug 反馈**：描述问题 + 复现步骤
+- 💡 **功能建议**：告诉我们你想加什么功能或格式支持
+- 💬 **一般讨论**：任何关于回形针插件的反馈都欢迎
+
+👉 [提交 Issue](https://github.com/zmm863-commits/dsh-paperclip/issues/new)
+
+---
+
 ## 许可证 License
 
 MIT
