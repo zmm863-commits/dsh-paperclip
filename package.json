@@ -57,5 +57,45 @@
     "build": "tsdown --config tsdown.config.ts && node build.mjs",
     "watch": "tsdown --config tsdown.config.ts --watch",
     "test": "node scripts/smoke-client.mjs"
+  },
+  "dshWorkshop": {
+    "schema": "omdsh-workshop-package/v1",
+    "type": "plugin",
+    "integration": {
+      "protocol": "harness-cordis",
+      "artifact": "cordis.patch.yml"
+    },
+    "install": {
+      "mode": "guided",
+      "adapter": "third-party",
+      "failurePolicy": "manual",
+      "touchesCurrentBeforeActivation": false
+    },
+    "lifecycle": {
+      "activation": "immediate",
+      "dispose": "unknown"
+    },
+    "permissions": [
+      "fs:read",
+      "fs:write",
+      "ui:inject"
+    ],
+    "compatibility": {
+      "dshVersions": [
+        "0.1.0-rc.6"
+      ]
+    },
+    "capability": {
+      "id": "paperclip-inserts-file",
+      "kind": "ui",
+      "invocation": "打开 DSH Web 界面，点击输入框右侧的 📎，选择一个文件",
+      "expected": "弹出文件选择器（支持拖拽），所选文件内容插入输入框文本"
+    },
+    "evidence": {
+      "install": null,
+      "failureIsolation": null,
+      "hotReload": null,
+      "remove": null
+    }
   }
 }
